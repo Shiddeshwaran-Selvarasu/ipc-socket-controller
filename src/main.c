@@ -17,29 +17,10 @@
 // Version string: IPC Controller v1.0.0
 #define APP_VERSION_STRING APP_NAME " v" STRINGIFY(APP_VER_MAJOR) "." STRINGIFY(APP_VER_MINOR) "." STRINGIFY(APP_VER_PATCH)
 
-volatile sig_atomic_t sigpipe_seen = 0;
-
-static void sigpipe_handler(int sig)
-{
-    (void)sig;
-    sigpipe_seen = 1;
-}
-
-static void setup_signal_handlers(void)
-{
-    struct sigaction sa;
-
-    sa.sa_handler = sigpipe_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-
-    sigaction(SIGPIPE, &sa, NULL);
-}
-
 int main(void)
 {
     LOG_INFO("Started %s\n", APP_VERSION_STRING);
-    setup_signal_handlers();
+    event_loop_init_signals();
 
     ipc_controller_init();
 

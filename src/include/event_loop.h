@@ -24,6 +24,8 @@ typedef struct {
 typedef int (*fd_event_handler_t)(struct pollfd *pfd, poll_ctx_t *ctx);
 typedef int (*timeout_handler_t)(void);
 
+void event_loop_init_signals(void);
+
 void loop(struct pollfd *pfds, poll_ctx_t *poll_ctx, int nfds,
     int timeout_ms, fd_event_handler_t fd_handler, timeout_handler_t timeout_handler);
 

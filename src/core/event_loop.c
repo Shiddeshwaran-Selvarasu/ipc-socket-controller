@@ -8,7 +8,24 @@
 
 #include "event_loop.h"
 
-extern volatile sig_atomic_t sigpipe_seen;
+volatile sig_atomic_t sigpipe_seen = 0;
+
+static void sigpipe_handler(int sig)
+{
+    (void)sig;
+    sigpipe_seen = 1;
+}
+
+void event_loop_init_signals(void)
+{
+    struct sigaction sa;
+
+    sa.sa_handler = sigpipe_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGPIPE, &sa, NULL);
+}
 
 static void check_and_log_sigpipe(void)
 {
