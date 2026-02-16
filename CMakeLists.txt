@@ -16,6 +16,12 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/exports/lib)
 # Include directories
 include_directories(src/include)
 
+# RPATH settings to ensure the executable can find the shared libraries in the ./lib directory
+set(CMAKE_BUILD_RPATH_USE_ORIGIN TRUE)
+set(CMAKE_SKIP_BUILD_RPATH FALSE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
+
 # -----------------------------------------------------------------------------
 # Shared Libraries
 # -----------------------------------------------------------------------------
@@ -66,7 +72,17 @@ target_link_libraries(ipc_controller
 # Set RPATH to look for libraries in the ./lib directory relative to the binary
 # $ORIGIN resolves to the directory containing the executable.
 set_target_properties(ipc_controller PROPERTIES
-    BUILD_WITH_INSTALL_RPATH TRUE
+    BUILD_RPATH "$ORIGIN/lib"
     INSTALL_RPATH "$ORIGIN/lib"
-    LINK_FLAGS "-Wl,-rpath,'./lib'"
+)
+
+set_target_properties(
+    ipc_logger
+    ipc_message
+    ipc_eventloop
+    ipc_router
+    ipc_proto
+PROPERTIES
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN"
 )
