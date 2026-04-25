@@ -11,9 +11,9 @@
 #define MAX_MESSAGES_QUEUED_PER_CLIENT 1000
 
 /* MAX_POLL_FDS: max fds to poll at a time.
- * = 1 (server socket) + MAX_ACTIVE_CLIENTS (active client sockets)
- * Note: pending clients are not included in this count as they are temporary and
- * when the total client count (pending + active) exceeds MAX_ACTIVE_CLIENTS, new connections are rejected.
+ * = 1 (server socket) + MAX_ACTIVE_CLIENTS (active + pending client sockets).
+ * add_pending_client rejects new connections once pending+active >= MAX_ACTIVE_CLIENTS,
+ * so the total fds is always <= 1 + MAX_ACTIVE_CLIENTS.
  */
 #define MAX_POLL_FDS (1 + MAX_ACTIVE_CLIENTS)
 
@@ -29,7 +29,7 @@ typedef struct {
 } message_header_t;
 
 typedef struct {
-    char data[IPC_MAX_MSG_LEN];
+    char  *data;   /* heap-allocated; NULL when slot is empty */
     size_t len;
 } queued_message_t;
 

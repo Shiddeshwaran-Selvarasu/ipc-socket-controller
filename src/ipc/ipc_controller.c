@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <endian.h>
 #include <time.h>
@@ -20,8 +21,8 @@ static int server_fd = -1;
 static int pending_client_count = 0;
 static int active_client_count = 0;
 
-pending_client_t pending[MAX_PENDING_CLIENTS];
-active_client_t  active[MAX_ACTIVE_CLIENTS];
+pending_client_t *pending[MAX_PENDING_CLIENTS];
+active_client_t  *active[MAX_ACTIVE_CLIENTS];
 
 /* Internal helper functions declarations */
 static int get_pending_client_index(int fd);
@@ -35,7 +36,7 @@ static int make_nonblocking(int fd);
 static uint64_t monotonic_ms(void);
 static int client_array_reset(void);
 static void buffer_consume(active_client_t *c, size_t bytes);
-static void process_client_rx_buffer(active_client_t *c);
+static int process_client_rx_buffer(active_client_t *c);
 int ipc_controller_handle_fd_events(struct pollfd *pfd);
 int ipc_client_interview_handle_fd_events(struct pollfd *pfd);
 int ipc_client_handle_fd_events(struct pollfd *pfd);
@@ -45,7 +46,7 @@ int ipc_client_handle_fd_events(struct pollfd *pfd);
 static int get_pending_client_index(int fd)
 {
     for (int i = 0; i < MAX_PENDING_CLIENTS; i++) {
-        if (pending[i].fd == fd) {
+        if (pending[i] != NULL && pending[i]->fd == fd) {
             return i;
         }
     }
@@ -55,7 +56,7 @@ static int get_pending_client_index(int fd)
 static int get_active_client_index(int fd)
 {
     for (int i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
-        if (active[i].fd == fd) {
+        if (active[i] != NULL && active[i]->fd == fd) {
             return i;
         }
     }
@@ -64,22 +65,31 @@ static int get_active_client_index(int fd)
 
 static int add_active_client(pending_client_t *pending_client)
 {
-    if (pending_client->fd < 0) return -1; /* No invalid fds */
+    if (pending_client->fd < 0) return -1;
 
     for (int i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
-        if (active[i].fd == -1) {
-            active[i].fd = pending_client->fd;
-            active[i].connected_ts_ms = pending_client->connected_ts_ms;
-            memcpy(active[i].service_type, pending_client->service_type, sizeof(active[i].service_type)-1);
-            memcpy(active[i].instance_name, pending_client->instance_name, sizeof(active[i].instance_name)-1);
+        if (active[i] == NULL) {
+            active_client_t *c = malloc(sizeof(active_client_t));
+            if (!c) { LOG_ERROR("malloc failed for active client fd=%d", pending_client->fd); return -1; }
+
+            c->fd = pending_client->fd;
+            c->connected_ts_ms = pending_client->connected_ts_ms;
+            memcpy(c->service_type, pending_client->service_type, sizeof(c->service_type) - 1);
+            c->service_type[sizeof(c->service_type) - 1] = '\0';
+            memcpy(c->instance_name, pending_client->instance_name, sizeof(c->instance_name) - 1);
+            c->instance_name[sizeof(c->instance_name) - 1] = '\0';
             for (int j = 0; j < MAX_SUBSCRIPTIONS_PER_CLIENT; j++) {
-                memcpy(active[i].subscriptions_list[j], pending_client->subscriptions_list[j], sizeof(active[i].subscriptions_list[j])-1);
+                memcpy(c->subscriptions_list[j], pending_client->subscriptions_list[j], sizeof(c->subscriptions_list[j]) - 1);
+                c->subscriptions_list[j][sizeof(c->subscriptions_list[j]) - 1] = '\0';
             }
-            memset(active[i].incoming_msg_buffer, 0, sizeof(active[i].incoming_msg_buffer));
-            active[i].incoming_msg_buffer_offset = 0;
-            memset(active[i].message_queue, 0, sizeof(active[i].message_queue));
-            active[i].queue_start_idx = 0;
-            active[i].queue_end_idx = 0;
+            memset(c->incoming_msg_buffer, 0, sizeof(c->incoming_msg_buffer));
+            c->incoming_msg_buffer_offset = 0;
+            memset(c->message_queue, 0, sizeof(c->message_queue));
+            c->queue_start_idx = 0;
+            c->queue_end_idx = 0;
+            c->tx_offset = 0;
+
+            active[i] = c;
             active_client_count++;
             return 0;
         }
@@ -92,8 +102,16 @@ static int remove_active_client(int fd)
 {
     int idx = get_active_client_index(fd);
     if (idx >= 0) {
-        close(active[idx].fd);
-        active[idx].fd = -1;
+        active_client_t *c = active[idx];
+        while (c->queue_start_idx != c->queue_end_idx) {
+            free(c->message_queue[c->queue_start_idx].data);
+            c->message_queue[c->queue_start_idx].data = NULL;
+            c->queue_start_idx =
+                (c->queue_start_idx + 1) % MAX_MESSAGES_QUEUED_PER_CLIENT;
+        }
+        close(c->fd);
+        free(c);
+        active[idx] = NULL;
         active_client_count--;
         return 0;
     }
@@ -107,16 +125,21 @@ static int add_pending_client(int fd)
         return -1;
     }
     for (int i = 0; i < MAX_PENDING_CLIENTS; i++) {
-        if (pending[i].fd == -1) {
-            pending[i].fd = fd;
-            pending[i].connected_ts_ms = monotonic_ms();
-            memset(pending[i].service_type, 0, sizeof(pending[i].service_type));
-            memset(pending[i].instance_name, 0, sizeof(pending[i].instance_name));
+        if (pending[i] == NULL) {
+            pending_client_t *c = malloc(sizeof(pending_client_t));
+            if (!c) { LOG_ERROR("malloc failed for pending client fd=%d", fd); return -1; }
+
+            c->fd = fd;
+            c->connected_ts_ms = monotonic_ms();
+            memset(c->service_type, 0, sizeof(c->service_type));
+            memset(c->instance_name, 0, sizeof(c->instance_name));
             for (int j = 0; j < MAX_SUBSCRIPTIONS_PER_CLIENT; j++) {
-                memset(pending[i].subscriptions_list[j], 0, sizeof(pending[i].subscriptions_list[j]));
+                memset(c->subscriptions_list[j], 0, sizeof(c->subscriptions_list[j]));
             }
-            pending[i].incoming_msg_buffer_offset = 0;
-            memset(pending[i].incoming_msg_buffer, 0, sizeof(pending[i].incoming_msg_buffer));
+            c->incoming_msg_buffer_offset = 0;
+            memset(c->incoming_msg_buffer, 0, sizeof(c->incoming_msg_buffer));
+
+            pending[i] = c;
             pending_client_count++;
             return 0;
         }
@@ -128,8 +151,9 @@ static int remove_pending_client(int fd)
 {
     int idx = get_pending_client_index(fd);
     if (idx >= 0) {
-        close(pending[idx].fd);
-        pending[idx].fd = -1;
+        close(pending[idx]->fd);
+        free(pending[idx]);
+        pending[idx] = NULL;
         pending_client_count--;
         return 0;
     }
@@ -140,10 +164,11 @@ static int remove_pending_client(int fd)
 static int move_pending_client_to_active(int fd)
 {
     for (int i = 0; i < MAX_PENDING_CLIENTS; i++) {
-        if (pending[i].fd == fd) {
-            int ret = add_active_client(&pending[i]);
+        if (pending[i] != NULL && pending[i]->fd == fd) {
+            int ret = add_active_client(pending[i]);
             if (ret == 0) {
-                pending[i].fd = -1;
+                free(pending[i]);
+                pending[i] = NULL;
                 pending_client_count--;
             }
             return ret;
@@ -170,10 +195,10 @@ static uint64_t monotonic_ms(void)
 static int client_array_reset(void)
 {
     for (int i = 0; i < MAX_PENDING_CLIENTS; i++) {
-        pending[i].fd = -1;
+        pending[i] = NULL;
     }
     for (int i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
-        active[i].fd = -1;
+        active[i] = NULL;
     }
     pending_client_count = 0;
     active_client_count = 0;
@@ -217,12 +242,12 @@ static void buffer_consume(active_client_t *c, size_t bytes)
     c->incoming_msg_buffer_offset -= bytes;
 }
 
-static void process_client_rx_buffer(active_client_t *c)
+static int process_client_rx_buffer(active_client_t *c)
 {
     while (1) {
         /* Need at least length prefix */
         if (c->incoming_msg_buffer_offset < 4)
-            return;
+            return 0;
 
         uint32_t frame_len_le;
         memcpy(&frame_len_le, c->incoming_msg_buffer, 4);
@@ -230,14 +255,14 @@ static void process_client_rx_buffer(active_client_t *c)
         uint32_t frame_len = le32toh(frame_len_le);
 
         if (frame_len == 0 || frame_len > IPC_MAX_MSG_LEN) {
-            LOG_ERROR("Invalid frame length %u from fd=%d", frame_len, c->fd);
-            return;
+            LOG_ERROR("Invalid frame length %u from fd=%d, dropping connection", frame_len, c->fd);
+            return -1;
         }
 
         size_t total_needed = 4 + frame_len;
 
         if ((size_t)c->incoming_msg_buffer_offset < total_needed)
-            return; /* wait for more data */
+            return 0; /* wait for more data */
 
         /* We have a full frame */
         char payload[IPC_MAX_MSG_LEN + 1];
@@ -337,6 +362,8 @@ static int flush_client_tx(active_client_t *c)
         }
 
         /* frame completed */
+        free(q->data);
+        q->data = NULL;
         c->tx_offset = 0;
         c->queue_start_idx =
             (c->queue_start_idx + 1) % MAX_MESSAGES_QUEUED_PER_CLIENT;
@@ -376,7 +403,7 @@ int ipc_client_interview_handle_fd_events(struct pollfd *pfd)
     int idx = get_pending_client_index(pfd->fd);
     if (idx < 0) return 0;
 
-    pending_client_t *c = &pending[idx];
+    pending_client_t *c = pending[idx];
 
     ssize_t n = read(pfd->fd, c->incoming_msg_buffer + c->incoming_msg_buffer_offset,
                         sizeof(c->incoming_msg_buffer) - c->incoming_msg_buffer_offset);
@@ -452,11 +479,17 @@ int ipc_client_handle_fd_events(struct pollfd *pfd)
     if (idx < 0)
         return 0;
 
-    active_client_t *c = &active[idx];
+    active_client_t *c = active[idx];
 
     if (pfd->revents & POLLIN) {
-        ssize_t n = read(pfd->fd, c->incoming_msg_buffer + c->incoming_msg_buffer_offset,
-                            sizeof(c->incoming_msg_buffer) - c->incoming_msg_buffer_offset);
+        size_t available = sizeof(c->incoming_msg_buffer) - c->incoming_msg_buffer_offset;
+        if (available == 0) {
+            LOG_ERROR("RX buffer full for fd=%d, dropping connection", pfd->fd);
+            remove_active_client(pfd->fd);
+            return 0;
+        }
+
+        ssize_t n = read(pfd->fd, c->incoming_msg_buffer + c->incoming_msg_buffer_offset, available);
 
         if (n <= 0) {
             LOG_ERROR("read failed for active client fd=%d: %s", pfd->fd, n < 0 ? strerror(errno) : "EOF");
@@ -466,13 +499,10 @@ int ipc_client_handle_fd_events(struct pollfd *pfd)
 
         c->incoming_msg_buffer_offset += n;
 
-        if (c->incoming_msg_buffer_offset > (int)sizeof(c->incoming_msg_buffer)) {
-            c->incoming_msg_buffer_offset = 0; /* reset buffer to avoid overflow */
-            LOG_ERROR("RX buffer overflow fd=%d", pfd->fd);
+        if (process_client_rx_buffer(c) < 0) {
+            remove_active_client(pfd->fd);
             return 0;
         }
-
-        process_client_rx_buffer(c);
     }
 
     if (pfd->revents & POLLOUT) {
@@ -515,14 +545,6 @@ int ipc_controller_init(void)
         return -1;
     }
 
-    if (make_nonblocking(server_fd) < 0)
-    {
-        LOG_ERROR("failed to make server socket non-blocking");
-        close(server_fd);
-        server_fd = -1;
-        return -1;
-    }
-
     // Clear client slots
     client_array_reset();
 
@@ -547,11 +569,11 @@ int ipc_controller_build_pollset(struct pollfd *pfds, poll_ctx_t *ctx, int max)
 
     /* active clients */
     for (int i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
-        if (active[i].fd >= 0) {
-            pfds[n].fd = active[i].fd;
-            
+        if (active[i] != NULL) {
+            pfds[n].fd = active[i]->fd;
+
             /* Enable POLLOUT only if TX queue not empty */
-            if (active[i].queue_start_idx != active[i].queue_end_idx) {
+            if (active[i]->queue_start_idx != active[i]->queue_end_idx) {
                 pfds[n].events = POLLIN | POLLOUT;
             } else {
                 pfds[n].events = POLLIN;
@@ -565,8 +587,8 @@ int ipc_controller_build_pollset(struct pollfd *pfds, poll_ctx_t *ctx, int max)
 
     /* pending clients */
     for (int i = 0; i < MAX_PENDING_CLIENTS; i++) {
-        if (pending[i].fd >= 0) {
-            pfds[n].fd = pending[i].fd;
+        if (pending[i] != NULL) {
+            pfds[n].fd = pending[i]->fd;
             pfds[n].events = POLLIN;
             ctx[n].role = POLL_ROLE_PENDING;
             ctx[n].index = i;
@@ -609,16 +631,17 @@ int ipc_client_interview_timeout(void)
     uint64_t now = monotonic_ms();
 
     for (int i = 0; i < MAX_PENDING_CLIENTS; i++) {
-        if (pending[i].fd < 0) continue;
+        if (pending[i] == NULL) continue;
 
-        if (now - pending[i].connected_ts_ms > IPC_HANDSHAKE_TIMEOUT_MS) {
-            LOG_WARN("Client fd=%d handshake timeout", pending[i].fd);
-            hello_message_t timeout_msg;
+        if (now - pending[i]->connected_ts_ms > IPC_HANDSHAKE_TIMEOUT_MS) {
+            int timed_out_fd = pending[i]->fd;
+            LOG_WARN("Client fd=%d handshake timeout", timed_out_fd);
+            hello_message_t timeout_msg = {0};
             get_hello_timeout_message(&timeout_msg);
-            if (write(pending[i].fd, timeout_msg.data, timeout_msg.length) < 0) {
-                LOG_WARN("write failed while sending timeout client fd=%d: %s", pending[i].fd, strerror(errno));
+            if (ipc_send_frame(timed_out_fd, timeout_msg.data, timeout_msg.length) < 0) {
+                LOG_WARN("write failed while sending timeout to fd=%d: %s", timed_out_fd, strerror(errno));
             }
-            remove_pending_client(pending[i].fd);
+            remove_pending_client(timed_out_fd);
         }
     }
     return 0;

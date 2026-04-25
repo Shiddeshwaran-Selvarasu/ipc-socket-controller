@@ -40,10 +40,12 @@ static void extract_json_value(const char *json, const char *key, message_out_t 
     for (int i = 1; i < r; i++) {
         /* 1. Check if the token is a string and matches our key */
         int key_len = tokens[i].end - tokens[i].start;
-        if (tokens[i].type == JSMN_STRING && 
+        if (tokens[i].type == JSMN_STRING &&
             (int)strlen(key) == key_len &&
             strncmp(json + tokens[i].start, key, key_len) == 0) {
-            
+
+            if (i + 1 >= r) break; /* key without value — malformed JSON */
+
             /* 2. The value is the next token */
             jsmntok_t *v = &tokens[i + 1];
             int val_len = v->end - v->start;

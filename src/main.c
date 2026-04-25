@@ -35,7 +35,7 @@ int main(void)
             break;
         }
 
-        if (loop_once(pfds, ctx, MAX_POLL_FDS, IPC_HANDSHAKE_TIMEOUT_MS, ipc_handle_fd_events, NULL) < 0) {
+        if (loop_once(pfds, ctx, nfds, IPC_HANDSHAKE_TIMEOUT_MS, ipc_handle_fd_events, NULL) < 0) {
             LOG_ERROR("Error in event loop");
             break;
         }

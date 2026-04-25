@@ -12,7 +12,7 @@ typedef struct
 
 typedef struct
 {
-    char value[256];
+    char value[IPC_MAX_MSG_LEN];
     int length;
 } message_out_t;
 

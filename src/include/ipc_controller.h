@@ -5,8 +5,8 @@
 #include "ipc_protocol.h"
 #include "event_loop.h"
 
-extern pending_client_t pending[MAX_PENDING_CLIENTS];
-extern active_client_t  active[MAX_ACTIVE_CLIENTS];
+extern pending_client_t *pending[];
+extern active_client_t  *active[];
 
 /* lifecycle */
 int ipc_controller_init(void);

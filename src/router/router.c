@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "ipc_protocol.h"
 #include "ipc_controller.h"
@@ -9,7 +10,7 @@
 #include "router.h"
 
 /* from ipc_controller.c */
-extern active_client_t active[MAX_ACTIVE_CLIENTS];
+extern active_client_t *active[MAX_ACTIVE_CLIENTS];
 
 /* -------- topic matcher -------- */
 static int topic_match(const char *sub, const char *topic)
@@ -36,9 +37,16 @@ static int enqueue_message(active_client_t *c, const char *data, size_t len)
         return -1;
     }
 
+    char *buf = malloc(len);
+    if (!buf) {
+        LOG_ERROR("malloc failed for TX queue fd=%d", c->fd);
+        return -1;
+    }
+    memcpy(buf, data, len);
+
     queued_message_t *q = &c->message_queue[c->queue_end_idx];
-    memcpy(q->data, data, len);
-    q->len = len;
+    q->data = buf;
+    q->len  = len;
 
     c->queue_end_idx = next;
     return 0;
@@ -70,8 +78,8 @@ int router_route_message(int src_fd, const char *payload, size_t len)
     int routed = 0;
 
     for (int i = 0; i < MAX_ACTIVE_CLIENTS; i++) {
-        active_client_t *c = &active[i];
-        if (c->fd < 0 || c->fd == src_fd) continue;
+        active_client_t *c = active[i];
+        if (c == NULL || c->fd == src_fd) continue;
 
         if (use_target) {
             if (strcmp(target.value, c->service_type) == 0) {
