@@ -1,0 +1,18 @@
+{
+  "src/main.c": 1777095486.643995,
+  "src/common/logger.c": 1771219998.0734308,
+  "src/router/router.c": 1777094642.125422,
+  "src/core/event_loop.c": 1771471814.434608,
+  "src/message/message.c": 1777095481.3072894,
+  "src/include/ipc_protocol.h": 1777095509.620765,
+  "src/include/message.h": 1777092597.9826553,
+  "src/include/logger.h": 1771471814.434738,
+  "src/include/router.h": 1771471814.434738,
+  "src/include/event_loop.h": 1771471814.434608,
+  "src/include/jsmn.h": 1771471814.434738,
+  "src/include/ipc_controller.h": 1777094902.650313,
+  "src/storage/storage.c": 1777092613.9562848,
+  "src/storage/storage.h": 1777095503.031257,
+  "src/ipc/ipc_controller.c": 1777095496.100723,
+  "CMakeLists.txt": 1777092631.3603334
+}
