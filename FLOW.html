@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IPC Socket Controller — Live Flow</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #111a2e;
+    --panel-2: #15203a;
+    --line: #1f2c4a;
+    --ink: #e6ecf5;
+    --muted: #8aa0c5;
+    --accent: #4cc4ff;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --pkt-target: #4cc4ff;
+    --pkt-topic: #c084fc;
+    --pkt-hello: #fbbf24;
+    --pkt-ack: #4ade80;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    overflow-x: hidden;
+  }
+
+  header {
+    padding: 18px 28px 12px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #0d1729 0%, #0b1220 100%);
+  }
+  header h1 {
+    margin: 0;
+    font-size: 22px;
+    letter-spacing: 0.3px;
+  }
+  header .sub {
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 4px;
+  }
+
+  /* Layout */
+  .stage {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 14px;
+    padding: 14px 18px;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  @media (max-width: 1100px) {
+    .stage { grid-template-columns: 1fr; }
+  }
+
+  .scene {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    height: 600px;
+    overflow: hidden;
+  }
+
+  /* Controller box (center) */
+  .controller {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 420px;
+    height: 460px;
+    background: var(--panel-2);
+    border: 1px solid #2a3a64;
+    border-radius: 12px;
+    box-shadow: 0 6px 32px rgba(76, 196, 255, 0.06);
+  }
+  .controller .label {
+    position: absolute;
+    top: -24px;
+    left: 0;
+    color: var(--accent);
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  .ctrl-row {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .ctrl-row:last-child { border-bottom: none; }
+  .ctrl-row b {
+    display: inline-block;
+    width: 110px;
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .ctrl-row.active {
+    background: rgba(76, 196, 255, 0.07);
+    border-left: 3px solid var(--accent);
+  }
+  .ctrl-row.fire {
+    animation: pulseRow 0.6s ease;
+  }
+  @keyframes pulseRow {
+    0%   { background: rgba(76, 196, 255, 0.0); }
+    40%  { background: rgba(76, 196, 255, 0.20); }
+    100% { background: rgba(76, 196, 255, 0.0); }
+  }
+
+  .pending-array, .active-array {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .slot {
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    background: #1a253f;
+    border: 1px solid #2a3a64;
+    font-size: 9px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted);
+    transition: all .25s ease;
+  }
+  .slot.filled.pending {
+    background: #3b2c12;
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+  .slot.filled.active {
+    background: #133326;
+    border-color: var(--ok);
+    color: var(--ok);
+  }
+  .slot.filled.fire {
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.4);
+  }
+
+  /* Clients (3 around the controller) */
+  .client {
+    position: absolute;
+    width: 150px;
+    background: var(--panel-2);
+    border: 1px solid #2a3a64;
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 11.5px;
+    transition: border-color .35s ease, box-shadow .35s ease, transform .3s ease;
+  }
+  .client.disconnected {
+    opacity: 0.35;
+    border-style: dashed;
+  }
+  .client.pending {
+    border-color: var(--warn);
+    box-shadow: 0 0 12px rgba(251, 191, 36, 0.25);
+  }
+  .client.active {
+    border-color: var(--ok);
+    box-shadow: 0 0 12px rgba(74, 222, 128, 0.25);
+  }
+  .client.fire {
+    transform: scale(1.04);
+    box-shadow: 0 0 18px rgba(76, 196, 255, 0.55);
+  }
+
+  .client-name { font-weight: 700; color: var(--ink); }
+  .client-meta { color: var(--muted); font-size: 10.5px; margin-top: 2px; line-height: 1.5; }
+  .client-state {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .client-state.idle    { background: #1a253f; color: var(--muted); }
+  .client-state.pending { background: #3b2c12; color: var(--warn); }
+  .client-state.active  { background: #133326; color: var(--ok); }
+
+  .client.c1 { left: 24px;  top: 40px;  }
+  .client.c2 { left: 24px;  top: 410px; }
+  .client.c3 { right: 24px; top: 220px; }
+
+  /* Animated frame packets */
+  .pkt {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 22px;
+    padding: 0 10px;
+    border-radius: 4px;
+    color: #0b1220;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+    display: inline-flex; align-items: center; justify-content: center;
+    pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+    transition: transform 0.85s cubic-bezier(.45,.05,.4,1), opacity 0.4s ease;
+    will-change: transform, opacity;
+    opacity: 0;
+    z-index: 5;
+  }
+  .pkt.show { opacity: 1; }
+  .pkt.hello   { background: var(--pkt-hello); }
+  .pkt.ack     { background: var(--pkt-ack); }
+  .pkt.target  { background: var(--pkt-target); color: #04263a;}
+  .pkt.topic   { background: var(--pkt-topic); color: #220f3a;}
+  .pkt.error   { background: var(--pkt-err); }
+
+  /* Right column */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .panel h3 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: var(--accent);
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+  }
+
+  .narration {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+    min-height: 80px;
+  }
+  .narration .step-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 4px;
+  }
+  .narration .step-body {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+  .narration .step-code {
+    margin-top: 8px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    color: var(--accent);
+    background: #0a1322;
+    padding: 6px 10px;
+    border-radius: 4px;
+    border-left: 2px solid var(--accent);
+  }
+
+  .controls {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: var(--panel-2);
+    color: var(--ink);
+    border: 1px solid #2a3a64;
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background .15s ease;
+  }
+  button:hover:not(:disabled) { background: #1c2a4d; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary {
+    background: linear-gradient(180deg, #4cc4ff 0%, #2998d6 100%);
+    color: #052235;
+    font-weight: 600;
+    border-color: #4cc4ff;
+  }
+
+  .scenario-list { list-style: none; padding: 0; margin: 0; }
+  .scenario-list li {
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .2s ease;
+  }
+  .scenario-list li:hover { border-color: var(--accent); }
+  .scenario-list li.running {
+    border-color: var(--accent);
+    background: rgba(76, 196, 255, 0.08);
+  }
+  .scenario-list li small {
+    display: block;
+    color: var(--muted);
+    margin-top: 3px;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--muted); }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend i {
+    width: 14px; height: 8px; border-radius: 2px; display: inline-block;
+  }
+
+  .log {
+    height: 200px;
+    overflow-y: auto;
+    background: #060c1a;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+  .log-line { white-space: pre-wrap; }
+  .log-line.info { color: var(--accent); }
+  .log-line.warn { color: var(--warn); }
+  .log-line.err  { color: var(--err); }
+  .log-line.ok   { color: var(--ok); }
+  .log-line.muted { color: var(--muted); }
+
+  .speed-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .speed-row input { flex: 1; }
+
+  /* Queue mini-bars on each active client */
+  .client-queue {
+    margin-top: 6px;
+    height: 6px;
+    background: #0a1322;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .client-queue > div {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), #c084fc);
+    transition: width .25s ease;
+  }
+
+  /* Connection wires from clients to controller (drawn dynamically) */
+  .wire {
+    position: absolute;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #2a3a64, transparent);
+    transform-origin: left center;
+    pointer-events: none;
+    opacity: 0.4;
+  }
+  .wire.up  { background: linear-gradient(90deg, transparent, var(--ok), transparent); opacity: 0.6;}
+
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    padding: 14px 0 22px;
+    border-top: 1px solid var(--line);
+    margin-top: 14px;
+  }
+
+  .legend-section { margin-top: 12px; }
+  .small-title { font-size: 10px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 5px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>IPC Socket Controller — Live Flow</h1>
+  <div class="sub">An animated walkthrough of a real Unix-domain socket message broker. Each frame you see corresponds to a function call in the C source.</div>
+</header>
+
+<div class="stage">
+
+  <!-- LEFT: animation scene -->
+  <div>
+    <div class="narration" id="narration">
+      <div class="step-title" id="stepTitle">Press <b>Play</b> to begin</div>
+      <div class="step-body" id="stepBody">This visualization walks you through the lifetime of a message — from the moment a client connects, through the handshake, through routing logic, all the way to delivery. Choose a scenario on the right.</div>
+      <div class="step-code" id="stepCode" style="display:none;"></div>
+    </div>
+
+    <div class="scene" id="scene">
+      <!-- Clients -->
+      <div class="client c1 disconnected" id="client-1">
+        <div class="client-name">CLIENT A</div>
+        <div class="client-meta" id="meta-1">service: <i>—</i><br>instance: <i>—</i><br>subs: <i>—</i></div>
+        <div class="client-state idle" id="state-1">DISCONNECTED</div>
+        <div class="client-queue"><div id="q-1"></div></div>
+      </div>
+
+      <div class="client c2 disconnected" id="client-2">
+        <div class="client-name">CLIENT B</div>
+        <div class="client-meta" id="meta-2">service: <i>—</i><br>instance: <i>—</i><br>subs: <i>—</i></div>
+        <div class="client-state idle" id="state-2">DISCONNECTED</div>
+        <div class="client-queue"><div id="q-2"></div></div>
+      </div>
+
+      <div class="client c3 disconnected" id="client-3">
+        <div class="client-name">CLIENT C</div>
+        <div class="client-meta" id="meta-3">service: <i>—</i><br>instance: <i>—</i><br>subs: <i>—</i></div>
+        <div class="client-state idle" id="state-3">DISCONNECTED</div>
+        <div class="client-queue"><div id="q-3"></div></div>
+      </div>
+
+      <!-- Wires -->
+      <svg id="wires" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none;"></svg>
+
+      <!-- Controller -->
+      <div class="controller" id="controller">
+        <span class="label">ipc_controller (process)</span>
+
+        <div class="ctrl-row" id="row-poll">
+          <b>poll()</b>
+          <span id="poll-state">idle (5s timeout)</span>
+        </div>
+
+        <div class="ctrl-row" id="row-server">
+          <b>server_fd</b>
+          <span>listen() on /run/ipc_controller.sock</span>
+        </div>
+
+        <div class="ctrl-row" id="row-pending">
+          <b>pending[16]</b>
+          <span id="pending-count">0 pending</span>
+          <div class="pending-array" id="pending-array"></div>
+        </div>
+
+        <div class="ctrl-row" id="row-active">
+          <b>active[32]</b>
+          <span id="active-count">0 active</span>
+          <div class="active-array" id="active-array"></div>
+        </div>
+
+        <div class="ctrl-row" id="row-router">
+          <b>router</b>
+          <span id="router-state">idle</span>
+        </div>
+
+        <div class="ctrl-row" id="row-jsmn">
+          <b>JSMN parser</b>
+          <span id="jsmn-state">idle (zero-alloc tokenizer)</span>
+        </div>
+
+        <div class="ctrl-row" id="row-tx">
+          <b>TX flush</b>
+          <span id="tx-state">idle</span>
+        </div>
+      </div>
+
+      <!-- Packets get inserted here at runtime -->
+    </div>
+
+    <div class="legend" style="margin-top:10px;">
+      <span><i style="background:var(--pkt-hello)"></i> HELLO frame</span>
+      <span><i style="background:var(--pkt-ack)"></i> ACK / OK</span>
+      <span><i style="background:var(--pkt-target)"></i> target-routed</span>
+      <span><i style="background:var(--pkt-topic)"></i> topic-routed</span>
+      <span><i style="background:var(--err)"></i> error / drop</span>
+    </div>
+  </div>
+
+  <!-- RIGHT: controls -->
+  <div>
+    <div class="panel">
+      <h3>Demo</h3>
+      <ul class="scenario-list" id="scenarios">
+        <li data-id="full" class="running">
+          <b>Full demo</b>
+          <small>Connect 3 clients → handshakes → target routing (service + instance) → topic pub/sub → TX queue full / tail-drop</small>
+        </li>
+      </ul>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Controls</h3>
+      <div class="controls">
+        <button class="primary" id="playBtn">▶ Play</button>
+        <button id="pauseBtn" disabled>❚❚ Pause</button>
+        <button id="resetBtn">↺ Reset</button>
+      </div>
+      <div class="speed-row">
+        <span>Speed</span>
+        <input type="range" id="speed" min="0.4" max="3" step="0.1" value="1">
+        <span id="speedLabel">1.0×</span>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:14px;">
+      <h3>Controller log (LOG_INFO / LOG_DEBUG)</h3>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Animation models the actual code paths in <code>src/ipc/ipc_controller.c</code>, <code>src/router/router.c</code>, <code>src/core/event_loop.c</code>, and <code>src/message/message.c</code>. See <code>FLOW.md</code> for the line-by-line narrative.
+</footer>
+
+<script>
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ *  Discrete-event simulation of the IPC controller.
+ *  The simulator's data model mirrors the C structs:
+ *     - pending[]  (max 16)
+ *     - active[]   (max 32) with circular TX queue
+ *  Each scenario is a list of {kind, payload, narrate} steps that the
+ *  player consumes at user-controlled speed.
+ *
+ *  Timing is not real wall-clock; the speed slider scales every duration.
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+
+const MAX_PENDING = 16;
+const MAX_ACTIVE  = 32;
+const QUEUE_BAR_MAX = 8;   // cosmetic max for the queue bar (full = saturated)
+
+// ── State ─────────────────────────────────────────────────────────────────
+let state = freshState();
+let speed = 1.0;
+let runningCancel = null;     // cancellation token
+let isPaused = false;
+let resumeResolve = null;
+
+function freshState() {
+  return {
+    pending: Array(MAX_PENDING).fill(null),
+    active:  Array(MAX_ACTIVE).fill(null),
+    clientStates: { 1: 'disconnected', 2: 'disconnected', 3: 'disconnected' },
+    clientQueues: { 1: 0, 2: 0, 3: 0 },
+  };
+}
+
+// ── DOM helpers ──────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const scene = $('scene');
+
+function log(line, klass='muted') {
+  const el = document.createElement('div');
+  el.className = `log-line ${klass}`;
+  const t = new Date();
+  const ts = `${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}.${String(t.getMilliseconds()).padStart(3,'0')}`;
+  el.textContent = `[${ts}] ${line}`;
+  $('log').appendChild(el);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function narrate(title, body, code) {
+  $('stepTitle').innerHTML = title;
+  $('stepBody').innerHTML = body;
+  if (code) {
+    $('stepCode').style.display = 'block';
+    $('stepCode').textContent = code;
+  } else {
+    $('stepCode').style.display = 'none';
+  }
+}
+
+function fireRow(rowId) {
+  const r = $(rowId);
+  r.classList.remove('fire');
+  void r.offsetWidth;
+  r.classList.add('fire');
+}
+
+function setRowText(id, text) { $(id).querySelector('span').textContent = text; }
+
+function rebuildSlots() {
+  // pending
+  const pa = $('pending-array');
+  pa.innerHTML = '';
+  let pcount = 0;
+  for (let i = 0; i < MAX_PENDING; i++) {
+    const s = document.createElement('div');
+    s.className = 'slot';
+    if (state.pending[i]) { s.classList.add('filled','pending'); pcount++; s.title = `fd=${state.pending[i].fd}`; }
+    pa.appendChild(s);
+  }
+  $('pending-count').textContent = `${pcount} pending`;
+
+  // active (showing first 12 slots cosmetically)
+  const aa = $('active-array');
+  aa.innerHTML = '';
+  let acount = 0;
+  for (let i = 0; i < 12; i++) {
+    const s = document.createElement('div');
+    s.className = 'slot';
+    if (state.active[i]) { s.classList.add('filled','active'); s.title = `fd=${state.active[i].fd} (${state.active[i].instance})`; }
+    aa.appendChild(s);
+  }
+  for (let i = 0; i < MAX_ACTIVE; i++) if (state.active[i]) acount++;
+  $('active-count').textContent = `${acount} active`;
+}
+
+function setClientUI(cid, opts) {
+  const el = $('client-' + cid);
+  el.classList.remove('disconnected','pending','active');
+  el.classList.add(opts.dom);
+  $('state-' + cid).className = 'client-state ' + opts.tag;
+  $('state-' + cid).textContent = opts.label;
+  if (opts.meta) $('meta-' + cid).innerHTML = opts.meta;
+}
+
+function setQueueBar(cid, n) {
+  state.clientQueues[cid] = n;
+  const pct = Math.min(100, (n / QUEUE_BAR_MAX) * 100);
+  $('q-' + cid).style.width = pct + '%';
+  $('q-' + cid).style.background = n >= QUEUE_BAR_MAX
+    ? 'linear-gradient(90deg, var(--err), var(--err))'
+    : 'linear-gradient(90deg, var(--accent), #c084fc)';
+}
+
+// ── Wires (drawn each tick to connect clients to the controller) ─────────
+function redrawWires() {
+  const svg = $('wires');
+  svg.innerHTML = '';
+  const ctrl = $('controller').getBoundingClientRect();
+  const sceneRect = scene.getBoundingClientRect();
+  for (const cid of [1,2,3]) {
+    const stateName = state.clientStates[cid];
+    if (stateName === 'disconnected') continue;
+    const cli = $('client-' + cid).getBoundingClientRect();
+    const sx = (cli.right + cli.left)/2 - sceneRect.left;
+    const sy = (cli.top + cli.bottom)/2 - sceneRect.top;
+    const tx = ctrl.left - sceneRect.left + (sx > ctrl.right - sceneRect.left ? ctrl.width : 0);
+    const ty = sy;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', sx); line.setAttribute('y1', sy);
+    line.setAttribute('x2', tx); line.setAttribute('y2', ty);
+    line.setAttribute('stroke', stateName === 'active' ? 'rgba(74,222,128,0.45)' : 'rgba(251,191,36,0.45)');
+    line.setAttribute('stroke-width', '1.5');
+    line.setAttribute('stroke-dasharray', stateName === 'pending' ? '4 4' : '');
+    svg.appendChild(line);
+  }
+}
+window.addEventListener('resize', redrawWires);
+
+// ── Packet animation ─────────────────────────────────────────────────────
+function packetCenters(cid) {
+  const cli = $('client-' + cid).getBoundingClientRect();
+  const sceneRect = scene.getBoundingClientRect();
+  return {
+    x: (cli.left + cli.right) / 2 - sceneRect.left,
+    y: (cli.top + cli.bottom) / 2 - sceneRect.top,
+  };
+}
+function controllerCenter() {
+  const ctrl = $('controller').getBoundingClientRect();
+  const sceneRect = scene.getBoundingClientRect();
+  return {
+    x: (ctrl.left + ctrl.right) / 2 - sceneRect.left,
+    y: (ctrl.top + ctrl.bottom) / 2 - sceneRect.top,
+  };
+}
+
+async function animatePacket(fromCid, toCid, kind, label, dir) {
+  // dir: 'in' (client -> controller), 'out' (controller -> client), 'pass' (full path)
+  const pkt = document.createElement('div');
+  pkt.className = `pkt ${kind}`;
+  pkt.textContent = label || '';
+
+  // Suppress transition for initial placement so the pill doesn't fly in
+  // from (0,0) the very first time we set transform.
+  pkt.style.transition = 'none';
+  scene.appendChild(pkt);
+
+  // Now that it's in the DOM (with content), measure actual rendered size
+  // — pills auto-size to their label, so width varies per scenario.
+  const w = pkt.offsetWidth;
+  const h = pkt.offsetHeight;
+
+  const ctrlPos = controllerCenter();
+  const start = fromCid ? packetCenters(fromCid) : ctrlPos;
+  const end   = toCid   ? packetCenters(toCid)   : ctrlPos;
+
+  // Place at start position with NO transition...
+  pkt.style.transform = `translate(${start.x - w/2}px, ${start.y - h/2}px)`;
+  // ...force reflow so the browser commits this position...
+  void pkt.offsetHeight;
+  // ...then re-enable transition for the real move.
+  pkt.style.transition = '';
+
+  await wait(30);
+  pkt.classList.add('show');
+
+  if (dir === 'pass') {
+    // client → controller → other client
+    pkt.style.transform = `translate(${ctrlPos.x - w/2}px, ${ctrlPos.y - h/2}px)`;
+    await wait(550 / speed);
+    pkt.style.transform = `translate(${end.x - w/2}px, ${end.y - h/2}px)`;
+    await wait(550 / speed);
+  } else {
+    pkt.style.transform = `translate(${end.x - w/2}px, ${end.y - h/2}px)`;
+    await wait(800 / speed);
+  }
+
+  pkt.classList.remove('show');
+  await wait(250);
+  pkt.remove();
+}
+
+// ── Pause-aware sleep ────────────────────────────────────────────────────
+function wait(ms) {
+  return new Promise(resolve => {
+    const start = performance.now();
+    function tick() {
+      if (runningCancel && runningCancel.cancelled) { resolve(); return; }
+      if (isPaused) {
+        new Promise(r => { resumeResolve = r; }).then(() => {
+          setTimeout(tick, 0);
+        });
+        return;
+      }
+      const elapsed = performance.now() - start;
+      if (elapsed >= ms) resolve();
+      else requestAnimationFrame(tick);
+    }
+    tick();
+  });
+}
+
+// ── Simulation primitives that mirror the C code ─────────────────────────
+
+// Equivalent of accept() + add_pending_client()
+async function simAccept(cid, fd) {
+  fireRow('row-poll'); fireRow('row-server');
+  setRowText('row-poll', `POLLIN on server_fd → accept()`);
+  log(`accept() returned fd=${fd}  [ipc_controller.c:377]`, 'info');
+  await wait(400/speed);
+
+  fireRow('row-pending');
+  // place in pending[]
+  for (let i = 0; i < MAX_PENDING; i++) {
+    if (!state.pending[i]) { state.pending[i] = { fd, cid, ts: Date.now() }; break; }
+  }
+  state.clientStates[cid] = 'pending';
+  setClientUI(cid, { dom: 'pending', tag: 'pending', label: 'PENDING' });
+  rebuildSlots();
+  redrawWires();
+  log(`add_pending_client(fd=${fd}) → slot allocated  [ipc_controller.c:122]`, 'info');
+  setRowText('row-poll', `idle (5s timeout)`);
+}
+
+// Equivalent of HELLO frame send + interview_handle_fd_events
+async function simHandshake(cid, fd, service, instance, subs) {
+  narrate(
+    `Step: Handshake (HELLO → ACK)`,
+    `Client <b>${cidName(cid)}</b> sends a length-prefixed HELLO frame announcing its <code>service</code>, <code>instance</code>, and <code>subscriptions</code>. The controller validates and promotes it from <i>pending</i> to <i>active</i>.`,
+    `extract_single_frame() → get_message_type() → str_to_array(subscriptions) → move_pending_client_to_active()`
+  );
+
+  // animate HELLO from client to controller
+  await animatePacket(cid, null, 'hello', 'HELLO', 'in');
+  fireRow('row-poll');
+  setRowText('row-poll', `POLLIN on pending fd=${fd}`);
+  log(`RX HELLO from fd=${fd}  [ipc_controller.c:401]`, 'info');
+  await wait(200/speed);
+
+  fireRow('row-jsmn');
+  setRowText('row-jsmn', `jsmn_parse — extracting "type", "service", ...`);
+  await wait(450/speed);
+  log(`extract_json_value("type") → "hello"  [message.c:13]`, 'muted');
+  log(`extract_json_value("service") → "${service}"`, 'muted');
+  log(`extract_json_value("instance") → "${instance}"`, 'muted');
+  log(`str_to_array(subscriptions) → [${subs.map(s=>'"'+s+'"').join(', ')}]`, 'muted');
+  setRowText('row-jsmn', `idle (zero-alloc tokenizer)`);
+
+  // promote
+  fireRow('row-active');
+  for (let i = 0; i < MAX_PENDING; i++) {
+    if (state.pending[i] && state.pending[i].fd === fd) {
+      state.pending[i] = null; break;
+    }
+  }
+  for (let i = 0; i < MAX_ACTIVE; i++) {
+    if (!state.active[i]) {
+      state.active[i] = { fd, cid, service, instance, subs, queue: 0 };
+      break;
+    }
+  }
+  state.clientStates[cid] = 'active';
+  setClientUI(cid, {
+    dom: 'active',
+    tag: 'active',
+    label: 'ACTIVE',
+    meta: `service: <i>${service}</i><br>instance: <i>${instance}</i><br>subs: <i>${subs.length ? subs.join(', ') : '—'}</i>`
+  });
+  rebuildSlots();
+  redrawWires();
+  log(`move_pending_client_to_active(fd=${fd}) ✓  [ipc_controller.c:164]`, 'ok');
+  await wait(350/speed);
+
+  // ACK back
+  await animatePacket(null, cid, 'ack', 'ACK', 'out');
+  log(`TX hello-ack to fd=${fd}  [message.c:114]`, 'ok');
+  setRowText('row-poll', `idle (5s timeout)`);
+}
+
+// Equivalent of router_route_message + enqueue_message + flush_client_tx
+async function simRoute(srcCid, msgKind, msgLabel, recipients, narration) {
+  if (narration) narrate(narration.title, narration.body, narration.code);
+
+  // RX
+  await animatePacket(srcCid, null, msgKind, msgLabel, 'in');
+  fireRow('row-poll');
+  const srcFd = activeFdOf(srcCid);
+  setRowText('row-poll', `POLLIN on active fd=${srcFd}`);
+  log(`RX frame from fd=${srcFd}  [ipc_controller.c:476]`, 'info');
+  await wait(220/speed);
+
+  // process_client_rx_buffer / extract length / parse
+  fireRow('row-jsmn');
+  setRowText('row-jsmn', `process_client_rx_buffer → router_route_message`);
+  await wait(420/speed);
+  setRowText('row-jsmn', `idle (zero-alloc tokenizer)`);
+
+  // routing
+  fireRow('row-router');
+  setRowText('row-router', `routing ${msgLabel} → ${recipients.length} recipient(s)`);
+  log(`router_route_message(src_fd=${srcFd}, ${msgKind})  [router.c:56]`, 'info');
+  await wait(380/speed);
+
+  // enqueue per recipient
+  for (const r of recipients) {
+    fireRow('row-active');
+    const slot = state.active.find(x => x && x.cid === r.cid);
+    if (!slot) continue;
+    if (slot.queue >= QUEUE_BAR_MAX && r.willDrop !== false) {
+      log(`enqueue dropped (queue full) fd=${slot.fd}  [router.c:36]`, 'err');
+      setRowText('row-router', `queue full → drop fd=${slot.fd}`);
+      await wait(220/speed);
+      continue;
+    }
+    slot.queue++;
+    setQueueBar(r.cid, slot.queue);
+    log(`enqueue_message → fd=${slot.fd} (${r.matchReason})  [router.c:31]`, 'ok');
+    await wait(180/speed);
+  }
+  setRowText('row-router', `idle`);
+
+  // flush per recipient (POLLOUT)
+  for (const r of recipients) {
+    const slot = state.active.find(x => x && x.cid === r.cid);
+    if (!slot || slot.queue === 0) continue;
+    fireRow('row-tx');
+    setRowText('row-tx', `flush_client_tx(fd=${slot.fd})`);
+    await animatePacket(null, r.cid, msgKind, msgLabel, 'out');
+    slot.queue = Math.max(0, slot.queue - 1);
+    setQueueBar(r.cid, slot.queue);
+    log(`writev() flushed frame to fd=${slot.fd}  [ipc_controller.c:340]`, 'ok');
+    await wait(150/speed);
+  }
+  setRowText('row-tx', `idle`);
+  setRowText('row-poll', `idle (5s timeout)`);
+}
+
+function cidName(cid) { return ['','A','B','C'][cid]; }
+function activeFdOf(cid) { const a = state.active.find(x => x && x.cid === cid); return a ? a.fd : -1; }
+
+// Disconnect / handshake-timeout cleanup
+async function simDisconnect(cid, reason='client closed') {
+  const fd = activeFdOf(cid) || pendingFdOf(cid);
+  if (fd < 0) return;
+  log(`fd=${fd}: ${reason}`, 'warn');
+
+  for (let i = 0; i < MAX_ACTIVE; i++) {
+    if (state.active[i] && state.active[i].cid === cid) {
+      state.active[i] = null;
+      log(`remove_active_client(fd=${fd})  [ipc_controller.c:101]`, 'warn');
+    }
+  }
+  for (let i = 0; i < MAX_PENDING; i++) {
+    if (state.pending[i] && state.pending[i].cid === cid) {
+      state.pending[i] = null;
+      log(`remove_pending_client(fd=${fd})  [ipc_controller.c:150]`, 'warn');
+    }
+  }
+  state.clientStates[cid] = 'disconnected';
+  setClientUI(cid, { dom: 'disconnected', tag: 'idle', label: 'DISCONNECTED', meta: 'service: <i>—</i><br>instance: <i>—</i><br>subs: <i>—</i>' });
+  setQueueBar(cid, 0);
+  rebuildSlots();
+  redrawWires();
+}
+function pendingFdOf(cid) { const p = state.pending.find(x => x && x.cid === cid); return p ? p.fd : -1; }
+
+// ── Scenarios ────────────────────────────────────────────────────────────
+
+async function scenarioConnect() {
+  narrate(
+    `Scenario 1 — Connect &amp; Handshake`,
+    `Two clients (<b>A</b>: a sensor, <b>B</b>: a dashboard) make TCP-style connections to the Unix socket. Each must send a HELLO frame within <b>5 seconds</b> or it is evicted.`,
+    `event_loop.c:loop_once → ipc_controller.c:ipc_handle_fd_events`
+  );
+
+  await simAccept(1, 4);
+  await wait(700/speed);
+  await simHandshake(1, 4, 'sensor_service', 'sensor_001', ['config.update', 'alerts.*']);
+  await wait(800/speed);
+
+  await simAccept(2, 5);
+  await wait(700/speed);
+  await simHandshake(2, 5, 'dashboard', 'dash_main', ['sensor.*', 'alerts.*']);
+}
+
+async function scenarioTarget() {
+  narrate(
+    `Scenario 2 — Target routing (broadcast by service)`,
+    `Client <b>B</b> publishes a frame with <code>"target":"sensor_service"</code>. The router walks <code>active[]</code> and enqueues the frame to every client whose <code>service_type</code> matches.`,
+    `router.c:80 — strcmp(target.value, c->service_type)`
+  );
+
+  // Make sure C is connected too as a second sensor
+  if (state.clientStates[3] !== 'active') {
+    await simAccept(3, 6);
+    await simHandshake(3, 6, 'sensor_service', 'sensor_002', ['config.update']);
+    await wait(500/speed);
+  }
+
+  await simRoute(2, 'target', '{target:sensor_service}', [
+    { cid: 1, matchReason: 'service_type match' },
+    { cid: 3, matchReason: 'service_type match' },
+  ]);
+}
+
+async function scenarioInstance() {
+  narrate(
+    `Scenario 3 — Target routing (unicast by instance)`,
+    `Client <b>B</b> publishes a frame with <code>"target":"sensor_001"</code>. Because <code>instance_name</code> is unique, the router stops at the first match — only one recipient.`,
+    `router.c:92-99 — strcmp(target.value, c->instance_name); break;`
+  );
+
+  await simRoute(2, 'target', '{target:sensor_001}', [
+    { cid: 1, matchReason: 'instance_name match (unique)' },
+  ]);
+}
+
+async function scenarioTopic() {
+  narrate(
+    `Scenario 4 — Topic pub/sub with wildcard`,
+    `Client <b>A</b> publishes <code>"topic":"sensor.temp"</code>. The router walks each active client's <code>subscriptions_list[]</code> and uses <code>topic_match</code> — exact match OR prefix-before-<code>*</code> match.`,
+    `router.c:101-115 — for each sub: topic_match(sub, topic.value)`
+  );
+
+  await simRoute(1, 'topic', '{topic:sensor.temp}', [
+    { cid: 2, matchReason: 'sub "sensor.*" prefix-matches' },
+  ]);
+}
+
+async function scenarioQueueFull() {
+  narrate(
+    `Scenario 6 — TX queue full (tail-drop)`,
+    `Client <b>A</b> publishes faster than client <b>B</b> can drain. When B's circular queue (max 1000) saturates, <code>enqueue_message</code> returns -1 and the new frame is dropped. <i>Existing</i> queued frames are preserved — tail-drop, not head-drop.`,
+    `router.c:31-38 — if (next == queue_start_idx) → drop`
+  );
+
+  // Pretend B is slow — pre-load its queue near the cap
+  const bSlot = state.active.find(x => x && x.cid === 2);
+  if (!bSlot) {
+    log('Run earlier scenarios first to set up clients', 'err');
+    return;
+  }
+  bSlot.queue = QUEUE_BAR_MAX;
+  setQueueBar(2, QUEUE_BAR_MAX);
+  log(`(simulating: client B has ${QUEUE_BAR_MAX} messages backed up)`, 'muted');
+  await wait(500/speed);
+
+  // Try to enqueue — gets dropped
+  await simRoute(1, 'topic', '{topic:sensor.temp}', [
+    { cid: 2, matchReason: 'sub "sensor.*" matches', willDrop: true },
+  ]);
+
+  // Drain a bit to recover
+  await wait(400/speed);
+  bSlot.queue = 2;
+  setQueueBar(2, 2);
+  log(`(consumer drained — queue back below capacity)`, 'muted');
+}
+
+async function scenarioFull() {
+  await scenarioConnect();
+  await wait(700/speed);
+  await scenarioTarget();
+  await wait(700/speed);
+  await scenarioInstance();
+  await wait(700/speed);
+  await scenarioTopic();
+  await wait(700/speed);
+  await scenarioQueueFull();
+
+  narrate(
+    `Demo complete`,
+    `You've seen the full lifecycle of a message — from a 4-byte length-prefixed frame entering the controller, through JSMN parsing, the router's target/topic decision tree, the per-client circular TX queue, and finally <code>writev()</code> back out to the wire.`,
+    `Read FLOW.md for the line-by-line narrative; explore the source under src/.`
+  );
+}
+
+const SCENARIOS = {
+  full: scenarioFull,
+};
+
+// ── Player controls ──────────────────────────────────────────────────────
+let currentScenarioId = 'full';
+
+document.querySelectorAll('#scenarios li').forEach(li => {
+  li.addEventListener('click', () => {
+    document.querySelectorAll('#scenarios li').forEach(x => x.classList.remove('running'));
+    li.classList.add('running');
+    currentScenarioId = li.dataset.id;
+    play();
+  });
+});
+
+$('playBtn').addEventListener('click', play);
+$('pauseBtn').addEventListener('click', () => {
+  if (isPaused) {
+    isPaused = false;
+    $('pauseBtn').textContent = '❚❚ Pause';
+    if (resumeResolve) { resumeResolve(); resumeResolve = null; }
+  } else {
+    isPaused = true;
+    $('pauseBtn').textContent = '▶ Resume';
+  }
+});
+$('resetBtn').addEventListener('click', resetAll);
+$('speed').addEventListener('input', e => {
+  speed = parseFloat(e.target.value);
+  $('speedLabel').textContent = speed.toFixed(1) + '×';
+});
+
+async function play() {
+  if (runningCancel) runningCancel.cancelled = true;
+  await wait(50);
+  resetAll(false);
+  $('playBtn').disabled = true;
+  $('pauseBtn').disabled = false;
+  runningCancel = { cancelled: false };
+  document.querySelectorAll('#scenarios li').forEach(x => x.classList.remove('running'));
+  document.querySelector(`#scenarios li[data-id="${currentScenarioId}"]`).classList.add('running');
+
+  try {
+    await SCENARIOS[currentScenarioId]();
+  } catch (e) {
+    console.error(e);
+  }
+  $('playBtn').disabled = false;
+  $('pauseBtn').disabled = true;
+  $('pauseBtn').textContent = '❚❚ Pause';
+  isPaused = false;
+}
+
+function resetAll(clearLog=true) {
+  if (runningCancel) runningCancel.cancelled = true;
+  state = freshState();
+  for (const cid of [1,2,3]) {
+    setClientUI(cid, { dom: 'disconnected', tag: 'idle', label: 'DISCONNECTED',
+      meta: 'service: <i>—</i><br>instance: <i>—</i><br>subs: <i>—</i>' });
+    setQueueBar(cid, 0);
+  }
+  rebuildSlots();
+  redrawWires();
+  setRowText('row-poll', `idle (5s timeout)`);
+  setRowText('row-router', `idle`);
+  setRowText('row-jsmn', `idle (zero-alloc tokenizer)`);
+  setRowText('row-tx', `idle`);
+  if (clearLog) $('log').innerHTML = '';
+  // remove any stray packets
+  scene.querySelectorAll('.pkt').forEach(p => p.remove());
+}
+
+// initial render
+rebuildSlots();
+setTimeout(redrawWires, 50);
+log('Controller ready (LOG_INFO)', 'info');
+log('Listening on /run/ipc_controller.sock', 'info');
+log('Pollset: 1 fd (server), timeout=5000ms', 'muted');
+</script>
+</body>
+</html>
